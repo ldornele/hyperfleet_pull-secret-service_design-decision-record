@@ -11,8 +11,10 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 - **M2**: Automated credential rotation and lifecycle management
 - **M3**: Support for private/customer-specific registries (e.g., Harbor, Nexus) and multi-cloud secret storage
 
-**Scope**:
-
+**Assumptions**:
+- **HyperFleet Pull Secret Service** will not interact with OCM components (including AMS).
+- Red Hat SSO authentication is out of scope. As token retrieval is effectively anonymous and relies on cloud provider–based identification, the Pull Secret Service will not have access to Red Hat IT user information for screening purposes. 
+- Adopting a per-hyperfleet instance deployment (Option A) over a global shared service prioritizes operational simplicity and failure isolation during the MVP phase, while keeping open the option for post-MVP consolidation based on cost and operational efficiency requirements.
 
 ---
 
