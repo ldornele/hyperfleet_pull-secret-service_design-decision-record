@@ -13,8 +13,8 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 
 **Assumptions**:
 - **HyperFleet Pull Secret Service** will not interact with OCM components (including AMS).
-- Red Hat SSO authentication is out of scope. As token retrieval is effectively anonymous and relies on cloud provider–based identification, the Pull Secret Service will not have access to Red Hat IT user information for screening purposes. 
-- Adopting a per-hyperfleet instance deployment (Option A) over a global shared service prioritizes operational simplicity and failure isolation during the MVP phase, while keeping open the option for post-MVP consolidation based on cost and operational efficiency requirements.
+- Red Hat SSO authentication is out of scope. As token retrieval is effectively anonymous and relies on cloud provider–based identification, the **HyperFleet Pull Secret Service** will not have access to Red Hat IT user information for screening purposes. 
+- A per-hyperfleet instance deployment (Option A) is adopted over a global shared service to prioritize operational simplicity and failure isolation during the MVP phase, while preserving a path to post-MVP consolidation based on cost and operational efficiency considerations. After the MVP, the architecture should support both per-hyperfleet and global deployments, enabling broader reuse (e.g., for OCP self-managed use cases).
 
 ---
 
