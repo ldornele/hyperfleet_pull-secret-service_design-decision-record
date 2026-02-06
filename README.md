@@ -20,9 +20,43 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 
 ## Table of Contents
 
+1. [Pull Secret Service Purpose and Responsibilities](#1-pull-secret-service-purpose-and-responsibilities)
 8. [Pull Secret Rotation Requirements](#8-pull-secret-rotation-requirements)
 
 ---
+
+## 1. Pull Secret Service Purpose and Responsibilities
+
+### 1.1 Service Overview
+
+The **Pull Secret Service** is responsible for:
+
+1. **Credential Generation**: Create robot accounts (Quay) and partner service accounts (Red Hat Registry) for cluster access to container registries
+2. **Secret Storage**: Store generated credentials in appropriate secret management systems (cloud-specific secret managers, Vault, Kubernetes Secrets)
+3. **Pull Secret Formatting**: Generate standard Docker auth config format for HyperShift consumption
+4. **Credential Rotation**: Automatically rotate credentials on a configurable schedule or on-demand
+5. **Lifecycle Management**: Track credential status, handle bans/unbans, and clean up expired credentials
+6. **Multi-Registry Support**: Support multiple registries (Quay.io, registry.redhat.io, cloud.openshift.com, private registries)
+
+### 1.2 Service Boundaries
+
+**In Scope**:
+- Registry credential generation (Quay robot accounts, Red Hat partner service accounts)
+- Docker auth config formatting
+- Credential storage and retrieval
+- Rotation orchestration
+- Ban/unban operations
+- Credential pool pre-generation (performance optimization)
+
+**Out of Scope**:
+- Cluster authentication (handled by HyperFleet API)
+- Registry deployment or management
+- Image scanning or vulnerability management
+- Registry mirror/proxy configuration
+- Network policies for registry access
+
+---
+
 
 ## 8. Pull Secret Rotation Requirements
 
