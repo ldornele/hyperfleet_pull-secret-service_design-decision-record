@@ -22,6 +22,7 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 ## Table of Contents
 
 1. [Pull Secret Service Purpose and Responsibilities](#1-pull-secret-service-purpose-and-responsibilities)
+2. [AMS Lift-and-Shift Assessment](#2-ams-lift-and-shift-assessment)
 8. [Pull Secret Rotation Requirements](#8-pull-secret-rotation-requirements)
 
 ---
@@ -58,8 +59,80 @@ The **Pull Secret Service** is responsible for:
 
 ---
 
+## 2. AMS Lift-and-Shift Assessment
+
+Based on analysis of `uhc-account-manager` repository, the following components should be lifted and shifted:
+
+#### 3.1.1 Data Model
+
+**RegistryCredential** (`pkg/api/registry_credential_types.go`):
+```go
+type RegistryCredential struct {
+    ID                  string    // UUID
+    Username            string    // External registry account name (e.g., hyperfleet_{provider}_{region}_{uuid} for Quay, uhc-{cluster-id} for RHIT)
+                                  // NOTE: This is the technical identifier of the credential in the external registry,
+                                  // NOT Red Hat IT user information. Derived from cluster ID and cloud context, not user identity.
+    Token               string    // External registry access token (encrypted at rest)
+    AccountID           *string   // Link to cluster owner (nullable for pool credentials)
+                                  // NOTE: In HyperFleet context, this is cluster ID, not RHIT user account ID
+    RegistryID          string    // Link to Registry definition
+    ExternalResourceID  *string   // Cluster external ID
+    CreatedAt           time.Time
+    UpdatedAt           time.Time
+}
+```
+**Note on Rotation Implementation**:
+The AMS code does **not** use a `Rotated` boolean field. Instead, rotation is handled by:
+1. Creating new `RegistryCredential` records for the cluster
+2. Maintaining multiple credentials for the same cluster during dual-credential period
+3. Deleting old `RegistryCredential` records after rotation completes
+4. Using `CreatedAt` timestamps to identify newest credentials
+
+**HyperFleet Adaptation**: Follow the same pattern - multiple credential records per cluster, delete old records after successful rotation.
+
+**Important Clarification on Field Semantics**:
+
+The `Username` and `AccountID` fields in the `RegistryCredential` model have **different semantics** in HyperFleet compared to AMS:
+
+| Field | AMS (User-Centric) | HyperFleet (Cluster-Centric) |
+|-------|-------------------|------------------------------|
+| `Username` | Could reference RHIT user account in some contexts | **Technical identifier** of the credential created in external registry (e.g., `hyperfleet_gcp_us-east1_abc123`, `uhc-cls-abc-123`). **Never** contains Red Hat IT user information. Includes cloud provider and region for better traceability. |
+| `AccountID` | Red Hat organization/account ID | **Cluster ID** in HyperFleet. Nullable for pool credentials. |
+
+**Key Point**: No Red Hat IT user information (email, user ID, personal data) is stored in this model. All identifiers are derived from **cluster ID** or are **auto-generated UUIDs** for technical registry accounts.
+
+**PullSecretRotation** (`pkg/api/pull_secret_rotation_types.go`):
+```go
+type PullSecretRotation struct {
+    ID         string    // UUID
+    ClusterID  string    // HyperFleet cluster ID
+    Status     string    // "pending" | "completed"
+    CreatedAt  time.Time
+    UpdatedAt  time.Time
+}
+```
+
+**Registry** (hardcoded configuration):
+```go
+type Registry struct {
+    ID          string // "quay", "redhat", "private-quay"
+    Name        string
+    Type        string // "QuayRegistry" | "RedhatRegistry"
+    URLs        []string // ["quay.io", "cloud.openshift.com"]
+    Config      map[string]interface{} // Registry-specific config
+}
+```
+
+#### 3.1.2 Access Token Service
+
+**File**: `pkg/services/access_token.go`
+
+
+---
+
 
 ## 8. Pull Secret Rotation Requirements
+
 
 In general, pull secret rotation is required in the following scenarios:
 
