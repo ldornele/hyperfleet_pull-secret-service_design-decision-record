@@ -627,6 +627,7 @@ func getRHServiceAccountNameFromUsername(username string) (string, error) {
   - **Example**: Request name `hyp-cls-abc123`, receive username `|hyp-cls-abc123`
 - **Token Format**: JWT token (not simple password like Quay)
 - **Partner Code**: `ocm-service` (shared between AMS and HyperFleet)
+  - **Decision Drivers**: Time to market, operational simplicity, reuse of client certificates and keys for RHIT API authentication.
   - **Post-MVP**: Adopt a dedicated partner code as HyperFleet scales significantly (e.g., to thousands of clusters).
 - **Soft Delete**: Deleted accounts can be recovered via `UpdatePartnerServiceAccount(name, recover=true)`
 - **Length Limit**: **49 characters maximum** (RHIT limitation)
