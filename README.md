@@ -1198,7 +1198,216 @@ Ncat: 0 bytes sent, 0 bytes received in 0.22 seconds.
 
 ## 5. API Design
 
-- TBD
+### 5.1 API Endpoints
+
+#### 5.1.1 Generate Pull Secret (Synchronous)
+
+**Endpoint**: `POST /api/hyperfleet/v1/clusters/{cluster_id}/pull-secrets`
+
+**Description**: Generate or retrieve pull secret for a cluster. Returns existing credentials if valid, creates new credentials if none exist.
+
+**Request**:
+```json
+{
+  "registries": ["quay", "redhat"],  // Optional: defaults to all registries
+  "force_new": false  // Optional: force new credential creation
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "id": "ps-abc-123",
+  "cluster_id": "cls-abc-123",
+  "pull_secret": {
+    "auths": {
+      "quay.io": {
+        "auth": "aHlwZXJmbGVldF9nY3BfdXMtZWFzdDFfYWJjMTIzZGVmNDU2OnRva2VuXzQ1Ng==",
+        "email": "hyperfleet@redhat.com"
+      },
+      "cloud.openshift.com": {
+        "auth": "aHlwZXJmbGVldF9nY3BfdXMtZWFzdDFfYWJjMTIzZGVmNDU2OnRva2VuXzQ1Ng==",
+        "email": "hyperfleet@redhat.com"
+      },
+      "registry.redhat.io": {
+        "auth": "dWhjLWNscy1hYmMtMTIzOnRva2VuXzc4OQ==",
+        "email": "hyperfleet@redhat.com"
+      }
+    }
+  },
+  "credentials": [
+    {
+      "registry_id": "quay",
+      "username": "redhat-openshift+hyperfleet_gcp_useast1_a1b2c3d4e5f6",
+      "created_at": "2025-10-21T14:30:00Z",
+      "expires_at": "2026-01-19T14:30:00Z"
+    },
+    {
+      "registry_id": "redhat",
+      "username": "|hyp-cls-abc123",
+      "created_at": "2025-10-21T14:30:00Z",
+      "expires_at": null
+    }
+  ],
+  "created_at": "2025-10-21T14:30:00Z",
+  "updated_at": "2025-10-21T14:30:00Z"
+}
+```
+
+**Note on Docker Auth Format**:
+The `auth` field contains base64-encoded `username:token` credentials:
+- Quay: `base64("redhat-openshift+hyperfleet_gcp_useast1_a1b2c3d4:token_456")` (format: `{org}+{robot_username}:token`)
+- RHIT: `base64("|hyp-cls-abc123:jwt_token_789")` (format: `|{name}:jwt_token`, pipe prefix added by RHIT)
+
+**Errors**:
+- `400 HYPERFLEET-VAL-010`: Invalid registry specified
+- `404 HYPERFLEET-NTF-001`: Cluster not found
+- `429 HYPERFLEET-LMT-001`: Rate limit exceeded
+- `500 HYPERFLEET-INT-001`: Internal server error
+- `502 HYPERFLEET-SVC-001`: Registry API unavailable (falls back to pool)
+
+**Idempotency**: Multiple calls return the same credentials unless `force_new=true`
+
+#### 5.1.2 Get Pull Secret (Retrieve Existing)
+
+**Endpoint**: `GET /api/hyperfleet/v1/clusters/{cluster_id}/pull-secrets`
+
+**Description**: Retrieve existing pull secret for a cluster. Returns 404 if no credentials exist.
+
+**Response** (200 OK):
+```json
+{
+  "id": "ps-abc-123",
+  "cluster_id": "cls-abc-123",
+  "pull_secret": { ... },
+  "credentials": [ ... ],
+  "created_at": "2025-10-21T14:30:00Z",
+  "updated_at": "2025-10-21T14:30:00Z"
+}
+```
+
+**Errors**:
+- `404 HYPERFLEET-NTF-002`: Pull secret not found for cluster
+
+#### 5.1.3 Delete Pull Secret
+
+**Endpoint**: `DELETE /api/hyperfleet/v1/clusters/{cluster_id}/pull-secrets`
+
+**Description**: Delete pull secret and revoke credentials from all registries. Used when cluster is deleted or credentials are compromised.
+
+**Response** (204 No Content)
+
+**Errors**:
+- `404 HYPERFLEET-NTF-001`: Cluster not found
+- `500 HYPERFLEET-INT-002`: Failed to revoke credentials from registry
+
+**Side Effects**:
+- Deletes robot accounts from Quay
+- Deletes partner service accounts from Red Hat Registry
+- Removes credentials from database
+- Logs security event for audit
+
+#### 5.1.4 Rotate Pull Secret (Async)
+
+**Endpoint**: `POST /api/hyperfleet/v1/clusters/{cluster_id}/pull-secrets/rotations`
+
+**Description**: Initiate pull secret rotation for a cluster. Returns rotation request ID. Actual rotation happens asynchronously via reconciler job.
+
+**Request**:
+```json
+{
+  "reason": "scheduled",  // "scheduled" | "compromise" | "manual"
+  "force_immediate": false  // Skip dual-credential period (emergency only)
+}
+```
+
+**Response** (202 Accepted):
+```json
+{
+  "id": "psr-abc-123",
+  "cluster_id": "cls-abc-123",
+  "status": "pending",
+  "reason": "scheduled",
+  "created_at": "2025-10-21T14:30:00Z",
+  "estimated_completion": "2025-10-21T14:35:00Z"
+}
+```
+
+**Errors**:
+- `404 HYPERFLEET-NTF-001`: Cluster not found
+- `409 HYPERFLEET-CNF-001`: Rotation already in progress for cluster
+
+#### 5.1.5 Get Rotation Status
+
+**Endpoint**: `GET /api/hyperfleet/v1/clusters/{cluster_id}/pull-secrets/rotations/{rotation_id}`
+
+**Response** (200 OK):
+```json
+{
+  "id": "psr-abc-123",
+  "cluster_id": "cls-abc-123",
+  "status": "completed",
+  "reason": "scheduled",
+  "old_credentials": [ ... ],
+  "new_credentials": [ ... ],
+  "created_at": "2025-10-21T14:30:00Z",
+  "completed_at": "2025-10-21T14:32:00Z"
+}
+```
+
+**Status Values**:
+- `pending`: Rotation request created, waiting for reconciler
+- `in_progress`: New credentials created, waiting for cluster update
+- `completed`: Rotation complete, old credentials deleted
+- `failed`: Rotation failed (manual intervention required)
+
+#### 5.1.6 List Rotations for Cluster
+
+**Endpoint**: `GET /api/hyperfleet/v1/clusters/{cluster_id}/pull-secrets/rotations`
+
+**Query Parameters**:
+- `status`: Filter by status (pending, in_progress, completed, failed)
+- `page`: Page number (default: 1)
+- `size`: Page size (default: 20, max: 100)
+
+**Response** (200 OK):
+```json
+{
+  "items": [ ... ],
+  "page": 1,
+  "size": 20,
+  "total": 42
+}
+```
+
+### 5.2 Authentication and Authorization
+
+#### 5.2.1 Authentication
+
+**Method**: Service-to-service authentication via Kubernetes ServiceAccount tokens
+
+**Flow**:
+1. Pull Secret Adapter calls API with ServiceAccount token in `Authorization: Bearer {token}` header
+2. API validates token signature against Kubernetes API
+3. Extracts ServiceAccount identity (namespace + name)
+4. Checks ServiceAccount has appropriate RBAC permissions
+
+**Important**: This authentication model is **effectively anonymous** from a Red Hat IT user perspective. The service relies on **cloud provider identification** (Kubernetes ServiceAccount → Cloud IAM identity) rather than user credentials. No Red Hat IT user information is required for credential generation or export control screening.
+
+**RBAC Permissions**:
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hyperfleet-pull-secret-service
+rules:
+  - apiGroups: ["hyperfleet.redhat.com"]
+    resources: ["clusters", "clusters/pull-secrets"]
+    verbs: ["get", "create", "delete"]
+  - apiGroups: ["hyperfleet.redhat.com"]
+    resources: ["clusters/statuses"]
+    verbs: ["create", "update"]
+```
 
 ---
 
