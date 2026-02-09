@@ -69,7 +69,7 @@ Based on analysis of `uhc-account-manager` repository, the following components 
 ```go
 type RegistryCredential struct {
     ID                  string    // UUID
-    Username            string    // External registry account name (e.g., hyperfleet_{provider}_{region}_{uuid} for Quay, uhc-{cluster-id} for RHIT)
+    Username            string    // External registry account name (e.g., hyperfleet_{provider}_{region}_{uuid} for Quay, hyp-{cluster-id} for RHIT)
                                   // NOTE: This is the technical identifier of the credential in the external registry,
                                   // NOT Red Hat IT user information. Derived from cluster ID and cloud context, not user identity.
     Token               string    // External registry access token (encrypted at rest)
@@ -96,7 +96,7 @@ The `Username` and `AccountID` fields in the `RegistryCredential` model have **d
 
 | Field | AMS (User-Centric) | HyperFleet (Cluster-Centric) |
 |-------|-------------------|------------------------------|
-| `Username` | Could reference RHIT user account in some contexts | **Technical identifier** of the credential created in external registry (e.g., `hyperfleet_gcp_us-east1_abc123`, `uhc-cls-abc-123`). **Never** contains Red Hat IT user information. Includes cloud provider and region for better traceability. |
+| `Username` | Could reference RHIT user account in some contexts | **Technical identifier** of the credential created in external registry (e.g., `hyperfleet_gcp_us-east1_abc123`, `hyp-cls-abc-123`). **Never** contains Red Hat IT user information. Includes cloud provider and region for better traceability. |
 | `AccountID` | Red Hat organization/account ID | **Cluster ID** in HyperFleet. Nullable for pool credentials. |
 
 **Key Point**: No Red Hat IT user information (email, user ID, personal data) is stored in this model. All identifiers are derived from **cluster ID** or are **auto-generated UUIDs** for technical registry accounts.
