@@ -137,6 +137,41 @@ type Registry struct {
 
 **File**: `pkg/services/access_token.go`
 
+**Logic to Adopt**:
+1. Acquire advisory lock on `(clusterID, externalResourceID)` to prevent race conditions
+2. Iterate through all registered registries
+3. For each registry, check if credentials exist for cluster
+4. If not found, create new credential
+5. Format credentials as Docker auth config JSON
+6. Return formatted pull secret
+
+**Cloud-Agnostic Pattern**:
+```go
+import (
+    "gitlab.cee.redhat.com/service/hyperfleet/pull-secret-service/pkg/api/registries"
+)
+
+func (s *AccessTokenService) GeneratePullSecret(ctx context.Context, clusterID string) (*DockerAuthConfig, error) {
+    // 1. Acquire advisory lock
+    lock := s.db.AcquireAdvisoryLock(ctx, clusterID)
+    defer lock.Release()
+
+    // 2. Fetch or create credentials for all registries
+    credentials := []RegistryCredential{}
+    for _, registry := range registries.All() {
+        cred, err := s.credentialService.FindOrCreate(ctx, clusterID, registry.ID)
+        if err != nil {
+            return nil, err
+        }
+        credentials = append(credentials, cred)
+    }
+
+    // 3. Format as Docker auth config
+    authConfig := s.formatDockerAuthConfig(credentials)
+    return authConfig, nil
+}
+```
+
 
 ---
 
