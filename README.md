@@ -23,7 +23,7 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 
 1. [Pull Secret Service Purpose and Responsibilities](#1-pull-secret-service-purpose-and-responsibilities)
 2. [AMS Lift-and-Shift Assessment](#2-ams-lift-and-shift-assessment)
-8. [Pull Secret Rotation Requirements](#8-pull-secret-rotation-requirements)
+3. [Pull Secret Rotation Requirements](#8-pull-secret-rotation-requirements)
 
 ---
 
@@ -351,7 +351,7 @@ func (s *sqlRegistryCredentialService) createExternalQuayCredentials(
 **Key Implementation Notes**:
 - **Naming Pattern**: HyperFleet uses `hyperfleet_{provider}_{region}_{uuid}` (e.g., `hyperfleet_gcp_useast1_a1b2c3d4e5f6`)
   - **Difference from AMS**: AMS uses `ocm_access_{uuid}` without cloud context
-  - **Rationale**: Include provider/region for better traceability and audit trails
+  - **Decision Drivers**: Include provider/region for better traceability and audit trails
   - **Components**:
     - `hyperfleet` - Service identifier
     - `{provider}` - Cloud provider (gcp, aws, azure)
@@ -365,11 +365,456 @@ func (s *sqlRegistryCredentialService) createExternalQuayCredentials(
 - **Cloud Context**: Provider and region extracted from cluster metadata at creation time
 - **Note**: `OrgName` and `TeamName` from Registry config used in Quay API calls
 
+**Red Hat Partner Service Accounts** (`pkg/client/rhit/registry.go`):
+
+**HyperFleet Pattern (Adapted from AMS `uhc-account-manager/pkg/client/rhit/registry.go`)**:
+
+Red Hat Registry uses a different system than Quay - the **Red Hat IT Container Registry Authorizer** API. This system uses **Partner Service Accounts** instead of Robot Accounts.
+
+**API Reference**: https://gitlab.corp.redhat.com/it-platform/container-registry-authorizer
+
+```go
+package rhit
+
+const (
+    hyperfleetAccountDescription = "HyperFleet Pull Secret Service cluster credential"
+)
+
+type ITRegistryService interface {
+    CreatePartnerServiceAccount(name string) (*PartnerServiceAccount, error)
+    GetPartnerServiceAccount(name string) (*PartnerServiceAccount, error)
+    UpdatePartnerServiceAccount(name string, recover bool) (*PartnerServiceAccount, error)
+    DeletePartnerServiceAccount(name string) error
+}
+
+type PartnerServiceAccount struct {
+    Name          string      `json:"name"`
+    Description   string      `json:"description"`
+    PartnerCode   string      `json:"partnerCode"`      // "ocm-service" for HyperFleet
+    Created       string      `json:"created"`
+    CreatedBy     string      `json:"createdBy"`
+    TokenDate     string      `json:"tokenDate"`
+    Credentials   Credentials `json:"credentials"`
+}
+
+type Credentials struct {
+    Username string `json:"username"`   // Format: "|{name}" (pipe prefix added by RHIT)
+    Password string `json:"password"`   // JWT token
+}
+
+// CreatePartnerServiceAccount creates a service account in Red Hat Registry
+func (r *RegistryService) CreatePartnerServiceAccount(name string) (*PartnerServiceAccount, error) {
+    // API: POST /partners/{partnerCode}/service-accounts
+    urlPath := fmt.Sprintf("partners/%s/service-accounts", api.OCMServicePartnerCode)
+    //                                                      └─────────────────────┘
+    //                                                      "ocm-service"
+
+    createRequest := CreatePartnerServiceAccountRequest{
+        Name:        name,
+        Description: hyperfleetAccountDescription,
+    }
+
+    req, err := r.client.newRequest("POST", RegistryBase, urlPath, nil, createRequest)
+    if err != nil {
+        return nil, err
+    }
+
+    var partnerServiceAccount PartnerServiceAccount
+    _, err = r.client.do(req, &partnerServiceAccount)
+    if err != nil {
+        return nil, err
+    }
+
+    return &partnerServiceAccount, nil
+}
+
+// UpdatePartnerServiceAccount recovers a soft-deleted service account
+func (r *RegistryService) UpdatePartnerServiceAccount(name string, recover bool) (*PartnerServiceAccount, error) {
+    urlPath := fmt.Sprintf("partners/%s/service-accounts/%s", api.OCMServicePartnerCode, name)
+
+    updateRequest := UpdatePartnerServiceAccountRequest{
+        Recover: recover,  // true = recover deleted account
+    }
+
+    req, err := r.client.newRequest("POST", RegistryBase, urlPath, nil, updateRequest)
+    if err != nil {
+        return nil, err
+    }
+
+    var partnerServiceAccount PartnerServiceAccount
+    _, err = r.client.do(req, &partnerServiceAccount)
+    if err != nil {
+        return nil, err
+    }
+
+    return &partnerServiceAccount, nil
+}
+
+// DeletePartnerServiceAccount soft-deletes a service account (can be recovered)
+func (r *RegistryService) DeletePartnerServiceAccount(name string) error {
+    urlPath := fmt.Sprintf("partners/%s/service-accounts/%s", api.OCMServicePartnerCode, name)
+
+    req, err := r.client.newRequest("DELETE", RegistryBase, urlPath, nil, nil)
+    if err != nil {
+        return err
+    }
+
+    var partnerServiceAccount PartnerServiceAccount
+    _, err = r.client.do(req, &partnerServiceAccount)
+    if err != nil {
+        return err
+    }
+
+    return nil
+}
+```
+
+**Usage in Registry Credential Service** (`pkg/services/registry_credential.go`):
+
+```go
+// RedHatRegistryAccountName generates account name for Red Hat Registry
+// HyperFleet uses "hyp-" prefix (vs AMS "uhc-")
+func (s *sqlRegistryCredentialService) RedHatRegistryAccountName(
+    cluster *api.Cluster,
+    externalResourceID string,
+) string {
+    var name string
+
+    switch {
+    case cluster == nil:
+        // Pool credential (unassigned)
+        name = fmt.Sprintf("hyp-pool-%s", uuid.New().String())
+        // Example: "hyp-pool-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    case externalResourceID != "":
+        // Cluster credential with external resource ID
+        // Use short cluster ID to work around RHIT length limit of 49 characters
+        name = fmt.Sprintf("hyp-cls-%s", externalResourceID)
+        // Example: "hyp-cls-abc123def456"
+
+    default:
+        // Cluster credential (default)
+        name = fmt.Sprintf("hyp-cls-%s", cluster.ID)
+        // Example: "hyp-cls-cls-abc-123"
+    }
+
+    return name
+}
+
+// createExternalRedhatCredentials creates credentials in Red Hat Registry
+// Responsibilities:
+//   - Create partner service account in RHIT via API
+//   - Populate RegistryCredential object with returned Username (with pipe prefix), Token (JWT)
+//   - Handle conflicts (account already exists)
+//
+// Important:
+//   - Username format: "|{name}" (RHIT adds pipe prefix)
+//   - Token is JWT, not simple password
+//   - Supports soft delete and recovery
+//   - Does NOT save to database (parent Create() method handles that)
+//
+func (s *sqlRegistryCredentialService) createExternalRedhatCredentials(
+    ctx context.Context,
+    cred *api.RegistryCredential,
+    cluster *api.Cluster,
+    registry *api.Registry,
+) error {
+
+    // Generate service account name
+    name := s.RedHatRegistryAccountName(cluster, cred.ExternalResourceId)
+    // Example: "hyp-cls-abc123"
+
+    // Create partner service account in RHIT
+    acct, err := s.rhitClient.Registry.CreatePartnerServiceAccount(name)
+    if err != nil {
+        // Handle conflict: account already exists
+        if _, ok := err.(rhit.ConflictError); ok {
+            // Fetch existing account
+            acct, err = s.rhitClient.Registry.GetPartnerServiceAccount(name)
+            if err != nil {
+                return fmt.Errorf("Unable to get existing Red Hat partner service account: %s", err)
+            }
+        } else {
+            return fmt.Errorf("Unable to create Red Hat partner service account: %s", err)
+        }
+    }
+
+    // Populate RegistryCredential with credentials from RHIT
+    cred.Username = acct.Credentials.Username  // e.g., "|hyp-cls-abc123" (pipe prefix added by RHIT)
+    cred.Token = acct.Credentials.Password     // JWT token
+    cred.RegistryID = registry.ID              // "Redhat_registry.redhat.io"
+    cred.AccountID = &cluster.ID               // In HyperFleet, AccountID stores cluster ID
+
+    return nil
+}
+
+// removeExternalRedhatCredentials deletes (soft delete) a service account
+func (s *sqlRegistryCredentialService) removeExternalRedhatCredentials(
+    ctx context.Context,
+    username string,
+) error {
+    ulog := logger.NewOCMLogger(ctx)
+
+    // Remove pipe prefix from username
+    name, err := getRHServiceAccountNameFromUsername(username)
+    // "|hyp-cls-abc123" -> "hyp-cls-abc123"
+    if err != nil {
+        err = fmt.Errorf("Error removing external credentials for Red Hat username %s: Service Account name could not be determined", username)
+        ulog.Contextual().Error(err, err.Error())
+        return err
+    }
+
+    // Delete (soft delete) the service account
+    err = s.rhitClient.Registry.DeletePartnerServiceAccount(name)
+    if err != nil && err.Error() == "404: Service Account not found" {
+        // Already deleted, ignore
+        return nil
+    } else if err != nil {
+        ulog.Contextual().Error(err, "Error removing external credentials for Red Hat username", "username", username, "trimmed name", name)
+    }
+
+    return err
+}
+
+// recoverDeletedRedhatCredentials recovers a soft-deleted service account
+func (s *sqlRegistryCredentialService) recoverDeletedRedhatCredentials(
+    ctx context.Context,
+    username string,
+) error {
+    ulog := logger.NewOCMLogger(ctx)
+
+    // Remove pipe prefix from username
+    name, err := getRHServiceAccountNameFromUsername(username)
+    if err != nil {
+        err = fmt.Errorf("Error recovering external credentials for Red Hat username %s: Service Account name could not be determined", username)
+        ulog.Contextual().Error(err, err.Error())
+        return err
+    }
+
+    // Recover the service account (soft delete reversal)
+    _, err = s.rhitClient.Registry.UpdatePartnerServiceAccount(name, true)
+    //                                                           └────┘
+    //                                                           recover=true
+    if err != nil && err.Error() == "404: Service Account not found" {
+        // Account doesn't exist, nothing to recover
+        return nil
+    } else if err != nil {
+        ulog.Contextual().Error(err, "Error recovering external credentials for Red Hat username", "username", username, "trimmed name", name)
+    }
+
+    return err
+}
+
+// getRHServiceAccountNameFromUsername removes pipe prefix from RHIT username
+func getRHServiceAccountNameFromUsername(username string) (string, error) {
+    // RHIT prepends all partner service accounts with a "|" character
+    // This prefix needs to be removed prior to API calls
+    substrings := strings.SplitN(username, "|", 2)
+    if len(substrings) < 2 {
+        return "", fmt.Errorf("RH Service Account Username %s does not match known format", username)
+    }
+    return substrings[1], nil
+}
+```
+
+**Key Implementation Notes**:
+- **Naming Pattern**: HyperFleet uses `hyp-cls-{cluster_id}` (vs AMS `uhc-{account_id}`)
+  - **Example**: `hyp-cls-abc123def456`
+  - **Decision Drivers**: Shorter than including provider/region (RHIT has 49 char limit)
+  - **Traceability**: Cluster ID is sufficient for audit trails
+- **Username Format**: RHIT returns `|{name}` (pipe prefix added by system)
+  - **Example**: Request name `hyp-cls-abc123`, receive username `|hyp-cls-abc123`
+- **Token Format**: JWT token (not simple password like Quay)
+- **Partner Code**: `ocm-service` (shared between AMS and HyperFleet)
+- **Soft Delete**: Deleted accounts can be recovered via `UpdatePartnerServiceAccount(name, recover=true)`
+- **Length Limit**: **49 characters maximum** (RHIT limitation)
+- **No Team Assignment**: Red Hat Registry doesn't use teams (unlike Quay)
+- **API Endpoint**: `https://container-registry-authorizer.api.redhat.com/v1/partners/ocm-service/service-accounts`
+- **Credential Reuse**: Multiple Red Hat registries (`registry.redhat.io`, `registry.connect.redhat.com`) share same credentials
+
+#### 3.1.4 M2: Credential Pool Management
+
+**File**: `cmd/account-manager/jobs/registry_credential_pool_loader.go`
+
+**Logic to Adopt**:
+1. Maintain pool of unassigned credentials (`AccountID IS NULL`)
+2. High-water mark threshold (e.g., 100 credentials per registry)
+3. Low-water mark alerts (e.g., <25 credentials)
+4. Batch creation jobs (configurable cardinality)
+5. Periodic reconciliation (e.g., every 5 minutes)
+
+**Benefits**:
+- **Performance**: Credentials available immediately (no registry API call on critical path)
+- **Resilience**: Pool absorbs temporary registry API outages
+- **Scalability**: Pre-generation parallelized, not blocking cluster creation
+
+**HyperFleet Pool Strategy with Cloud Context Naming**:
+
+Since robot account names include `{provider}_{region}`, there are two approaches:
+
+**Option A: On-Demand Generation (Recommended for MVP)**
+- Generate credentials **when cluster is created** (not pre-generated)
+- Username includes actual cluster's provider/region at creation time
+- **Pros**: No renaming logic, simpler implementation, accurate cloud context
+- **Cons**: Adds ~2-3 seconds to cluster creation (Quay API call on critical path)
+- **Fallback**: If Quay API fails, return error and retry (no pool to fall back to)
+
+**Option B: Pre-Generated Pool with Placeholder Regions**
+- Pre-generate pool with generic provider/region (e.g., `hyperfleet_multi_global_{uuid}`)
+- Rename robot account via Quay API when assigning to cluster
+- **Pros**: Fast assignment, resilient to Quay API outages
+- **Cons**: Requires Quay robot renaming API (if available), added complexity
+- **Challenge**: Quay may not support renaming robot accounts (needs verification)
+
+**Recommendation**: Start with **Option A** (on-demand) for MVP. Add pool (Option B) in M2 if:
+1. Quay API latency becomes bottleneck (>5 seconds p99)
+2. Quay robot renaming API is available and tested
+3. Operational complexity is acceptable
+
+#### 3.1.5 M2: Rotation Reconciler
+
+**File**: `cmd/account-manager/jobs/pull_secret_rotations_reconciler.go`
+
+**Logic to Adopt**:
+1. Query pending `PullSecretRotation` records
+2. Create new `RegistryCredential` records for all registries (new robot accounts in Quay/RHIT)
+3. **Dual credential period begins**: Both old and new credentials exist in database for same cluster
+4. Format pull secret with new credentials and notify cluster
+5. Wait for cluster to update (health check via API or grace period, e.g., 7 days)
+6. Delete old `RegistryCredential` records from database
+7. Delete old robot accounts from external registries (Quay/RHIT)
+8. Mark `PullSecretRotation` status as `completed`
+
+**Key Pattern**: **Dual credential period** ensures zero-downtime rotation:
+- New credentials created without deleting old ones
+- Both old and new `RegistryCredential` records coexist for same cluster
+- Cluster can use either old or new credentials during transition
+- Old credentials only deleted after confirmation cluster has updated
+- **Implementation**: Query for credentials by `(cluster_id, registry_id)` returns multiple records; use most recent based on `CreatedAt`
+
+### 3.2 Components to Adapt
+
+#### 3.2.1 Authentication and Authorization
+
+**AMS Approach**:
+- OCM JWT tokens
+- `access_review` service for permission checks
+- User-owns-resource pattern
+
+**HyperFleet Adaptation**:
+- Replace OCM JWT with HyperFleet API JWT (OIDC post-MVP)
+- Replace `access_review` with HyperFleet RBAC (cluster owner checks)
+- Maintain user-owns-resource pattern for pull secret rotation endpoints
+
+#### 3.2.2 Database Schema
+
+**AMS Approach**:
+- PostgreSQL with GORM ORM
+- Advisory locks for concurrency control
+- Indexes on `(account_id)`, `(registry_id)`, `(account_id, external_resource_id)`
+
+**HyperFleet Adaptation**:
+- Reuse PostgreSQL schema (semantic mapping: `account_id` column stores `cluster_id` in HyperFleet)
+- Column name `account_id` is kept for code reuse (AMS lift-and-shift)
+- If using per-instance deployment, consider adding `hyperfleet_instance_id` column for cross-instance queries
+- Add composite index on `(hyperfleet_instance_id, account_id)` if multi-instance tracking is needed
+
+#### 3.2.3 API Endpoints
+
+**AMS Approach**:
+- REST endpoints: `POST /access_token`, `DELETE /access_token/{id}`
+- Pull secret rotation endpoints under `/accounts/{id}/pull_secret_rotation`
+
+**HyperFleet Adaptation**:
+- Align with HyperFleet REST patterns: `/clusters/{id}/pull-secrets`
+- Use CloudEvents for async rotation triggers (not direct HTTP calls)
+- Status reporting via `/clusters/{id}/statuses` (adapter pattern)
+
+### 3.3 Components to Replace
+
+#### 3.3.1 Export Control Checks and User Screening
+
+**AMS Logic**: Account screening middleware checks for export control restrictions based on Red Hat IT user information (user email, organization, geographic location)
+
+**HyperFleet Replacement**: Not applicable - **HyperFleet Pull Secret Service does not require Red Hat IT user information for screening**
+
+**Key Architectural Difference**:
+
+The Pull Secret Service operates with **effectively anonymous credential fetching**, relying on **cloud provider identification** rather than user identity:
+
+1. **No User Context Required**:
+   - AMS model: User-centric (requires RHIT user email, account ID, organization hierarchy)
+   - HyperFleet model: Cluster-centric (uses cluster ID, cloud provider ServiceAccount/IAM identity)
+
+2. **Authentication Flow**:
+   - Service-to-service authentication via **Kubernetes ServiceAccount tokens**
+   - Cloud provider authentication via **Workload Identity** (GCP), **IAM Roles** (AWS), or **Managed Identity** (Azure)
+   - No user credentials or personal information involved in the pull secret generation flow
+
+3. **Credential Naming Convention**:
+
+   **Quay Robot Accounts**: `hyperfleet_{provider}_{region}_{uuid}` (includes cloud context)
+   - **Example**: `hyperfleet_gcp_useast1_a1b2c3d4e5f6`
+   - **Format**: `hyperfleet_{provider}_{normalized_region}_{uuid_16_chars}`
+   - **Decision Drivers**: Include cloud context for traceability and audit trails
+   - **Components**:
+     - `hyperfleet`: Service identifier (distinguishes from AMS `ocm_access_` prefix)
+     - `{provider}`: Cloud provider (lowercase: `gcp`, `aws`, `azure`)
+     - `{region}`: Normalized region (hyphens/dots removed: `useast1`, `uswest2`, `eastus`)
+     - `{uuid}`: Auto-generated unique identifier (first 16 chars of UUID v4, no hyphens)
+
+   **Benefits of New Naming Pattern**:
+   - ✅ Clear service attribution (HyperFleet vs AMS credentials)
+   - ✅ Audit trail includes deployment context (which cloud, which region)
+   - ✅ Troubleshooting: easily identify credentials by environment
+   - ✅ Cost tracking: can map credentials to specific cloud deployments
+   - ✅ Security: credentials can be filtered/revoked by provider/region in incident response
+
+   **Red Hat Partner Service Accounts**: `hyp-cls-{cluster-id}` (cluster-scoped, not user-scoped)
+   - **Example**: `hyp-cls-abc123` (returned as `|hyp-cls-abc123` by RHIT with pipe prefix)
+   - **Decision Drivers**: Shorter than provider/region pattern (RHIT has 49 char limit)
+   - **Format**: HyperFleet uses `hyp-` prefix (vs AMS `uhc-`) for differentiation
+
+4. **Export Control Handling**:
+   - HyperFleet assumes export control is handled at **organization/subscription level** during onboarding
+   - Credential generation does not re-evaluate export control per cluster creation
+   - Post-MVP consideration: Organization-level policy enforcement if needed
+
+**Decision Drivers**: This design simplifies compliance by moving screening upstream (organization onboarding) and enables fully automated, cloud-native credential management without human-in-the-loop identity verification.
+
+#### 3.3.2 M2: Ban/Unban Operations
+
+**AMS Logic**: Bans remove credentials from registries, moves Quay robots to "banned" team
+
+**HyperFleet Adaptation**: Simplify to "suspend" (delete external credentials but keep DB record) and "resume" (recreate credentials)
+
+### 3.4 Key Files Reference from AMS
+
+**Core Services** (lift-and-shift with adaptations):
+- `/pkg/services/access_token.go` - Pull secret generation logic
+- `/pkg/services/registry_credential.go` - Credential CRUD and pool management
+- `/pkg/services/pull_secret_rotation.go` - Rotation orchestration
+- `/pkg/services/registry.go` - Registry abstraction layer
+
+**External Clients** (reuse as-is):
+- `/pkg/client/quay/robot_users.go` - Quay integration
+- `/pkg/client/rhit/registry.go` - Red Hat registry integration
+
+**Jobs** (adapt to HyperFleet job framework):
+- `/cmd/account-manager/jobs/registry_credential_pool_loader.go`
+- `/cmd/account-manager/jobs/pull_secret_rotations_reconciler.go`
+
+**Documentation** (adapt for HyperFleet):
+- `/docs/pull_secret_rotation.md`
+- `/docs/pull_secret_auto_rotation.md`
+
+
+
 
 ---
 
 
-## 8. Pull Secret Rotation Requirements
+## 3. Pull Secret Rotation Requirements
 
 
 In general, pull secret rotation is required in the following scenarios:
