@@ -313,6 +313,8 @@ func getUsernameFromRobotUserName(robotUserName string) string {
 **Usage in Registry Credential Service** (`pkg/services/registry_credential.go`):
 
 ```go
+// createExternalQuayCredentials creates a robot account in Quay.io and populates the RegistryCredential object.
+
 func (s *sqlRegistryCredentialService) createExternalQuayCredentials(
     ctx context.Context,
     cred *api.RegistryCredential,
