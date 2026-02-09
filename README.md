@@ -1176,13 +1176,21 @@ secrets/rhsm-2022.ca    # Root CA (current)
 
 ### 4.7 Network Connectivity Test
 
-✅ **Public internet access enabled for RHIT**
+✅ **Connectivity from RHIT over the public internet verified**
 
 ```bash
 [root]$ nc -zv container-registry-authorizer.api.redhat.com 443
 Ncat: Version 7.92 ( https://nmap.org/ncat )
 Ncat: Connected to 23.65.139.246:443.
 Ncat: 0 bytes sent, 0 bytes received in 0.12 seconds.
+```
+✅ **Connectivity to Quay.io (Public SaaS) over the public internet verified**
+
+```bash
+[root]$ nc -zv quay.io 443
+Ncat: Version 7.92 ( https://nmap.org/ncat )
+Ncat: Connected to 2600:1f18:d77:9002:6c26:2939:9ddb:3526:443.
+Ncat: 0 bytes sent, 0 bytes received in 0.22 seconds.
 ```
 
 
