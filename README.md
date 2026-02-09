@@ -112,14 +112,24 @@ type PullSecretRotation struct {
 }
 ```
 
-**Registry** (hardcoded configuration):
+**Registry** (`pkg/api/registry_types.go`) - hardcoded configuration:
 ```go
+type RegistryType string
+
+const (
+    QuayRegistry   RegistryType = "Quay"
+    RedhatRegistry RegistryType = "Redhat"
+)
+
 type Registry struct {
-    ID          string // "quay", "redhat", "private-quay"
-    Name        string
-    Type        string // "QuayRegistry" | "RedhatRegistry"
-    URLs        []string // ["quay.io", "cloud.openshift.com"]
-    Config      map[string]interface{} // Registry-specific config
+    ID         string       // "quay", "redhat", "cloud-openshift"
+    Name       string       // Human-readable name (e.g., "Quay.io", "Red Hat Registry")
+    Type       RegistryType // QuayRegistry or RedhatRegistry
+    URL        string       // Registry URL (e.g., "quay.io", "registry.redhat.io", "cloud.openshift.com")
+    OrgName    string       // Organization name in registry (e.g., "redhat-openshift" for Quay)
+    TeamName   string       // Team name for robot account assignment (e.g., "hyperfleet-installers")
+    CloudAlias bool         // Whether this registry should be used as cloud alias in pull secret output
+                            // Example: cloud.openshift.com is a cloud alias for Quay registry
 }
 ```
 
