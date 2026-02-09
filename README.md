@@ -172,6 +172,197 @@ func (s *AccessTokenService) GeneratePullSecret(ctx context.Context, clusterID s
 }
 ```
 
+#### 3.1.3 Registry Integrations
+
+**Quay Robot Users** (`pkg/client/quay/robot_users.go`):
+
+**HyperFleet Pattern (Adapted from AMS `uhc-account-manager/pkg/client/quay/robot_users.go:99`)**:
+
+```go
+package quay
+
+import (
+    "fmt"
+    "regexp"
+    "strings"
+
+    "github.com/google/uuid"
+)
+
+const (
+    UsernameRegex              = "^[a-z0-9_]{1,254}$"
+    UnacceptableCharsRegex     = "[^a-z0-9_]"
+    FirstCharRegex             = "^[a-z0-9].*"
+    ConsecutiveUnderscoreRegex = "__+"
+    robotUserDescription       = "Created by HyperFleet Pull Secret Service"
+    RobotUserPrefix            = "hyperfleet"
+)
+
+type RobotUser struct {
+    Name        string `json:"name"`
+    Description string `json:"description"`
+    Token       string `json:"token"`
+}
+
+type RobotUserRequest struct {
+    Description string `json:"description"`
+}
+
+// QuayUsername generates a Quay-compliant username with cloud context
+// Returns: "hyperfleet_{provider}_{region}_{uuid}" (e.g., "hyperfleet_gcp_useast1_a1b2c3d4")
+func QuayUsername(provider, region string) (string, error) {
+    usernameRe := regexp.MustCompile(UsernameRegex)
+    badCharsRe := regexp.MustCompile(UnacceptableCharsRegex)
+    firstCharRe := regexp.MustCompile(FirstCharRegex)
+    consecutiveUnderscoreRe := regexp.MustCompile(ConsecutiveUnderscoreRegex)
+
+    // Normalize region (remove hyphens, dots - Quay only allows underscores)
+    normalizedRegion := NormalizeRegion(region)
+
+    // Generate UUID suffix (first 16 chars without hyphens)
+    uuidSuffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:16]
+
+    // Generate username: hyperfleet_{provider}_{region}_{uuid}
+    var username = fmt.Sprintf("%s_%s_%s_%s", RobotUserPrefix, provider, normalizedRegion, uuidSuffix)
+    username = strings.ToLower(username)
+
+    // Remove unacceptable characters (safety check)
+    username = badCharsRe.ReplaceAllLiteralString(username, "")
+
+    // Ensure first character is acceptable for Quay
+    if !firstCharRe.MatchString(username) {
+        username = "0" + username[1:]
+    }
+
+    // Remove consecutive underscores (not allowed by Quay)
+    if consecutiveUnderscoreRe.MatchString(username) {
+        username = consecutiveUnderscoreRe.ReplaceAllLiteralString(username, "_")
+    }
+
+    // Validate final username
+    var err error
+    matched := usernameRe.MatchString(username)
+    if !matched {
+        err = fmt.Errorf("Generated quay username %s does not meet regex requirements", username)
+    }
+
+    return username, err
+}
+
+// NormalizeRegion normalizes region names for Quay compliance
+// Replaces hyphens and dots with underscores (Quay regex: ^[a-z0-9_]{1,254}$)
+func NormalizeRegion(region string) string {
+    // us-east-1 -> useast1
+    // europe-west1-a -> europewest1a
+    normalized := strings.ReplaceAll(region, "-", "")
+    normalized = strings.ReplaceAll(normalized, ".", "")
+    return normalized
+}
+
+// Create creates a robot user in Quay
+func (s *RobotUsersService) Create(organization string, provider string, region string) (*RobotUser, error) {
+    username, err := QuayUsername(provider, region)
+    if err != nil {
+        return nil, fmt.Errorf("Could not generate registry username %s", err)
+    }
+
+    path := fmt.Sprintf("organization/%s/robots/%s", organization, username)
+    robotUserReq := &RobotUserRequest{Description: robotUserDescription}
+
+    req, err := s.client.newRequest("PUT", path, robotUserReq)
+    if err != nil {
+        return nil, err
+    }
+
+    var robotUser RobotUser
+    _, err = s.client.do(req, &robotUser)
+    if err != nil {
+        return nil, err
+    }
+    return &robotUser, nil
+}
+
+// Delete removes a robot user from Quay
+func (s *RobotUsersService) Delete(organization string, robotUsername string) (*RobotUser, error) {
+    path := fmt.Sprintf("organization/%s/robots/%s", organization, getUsernameFromRobotUserName(robotUsername))
+
+    req, err := s.client.newRequest("DELETE", path, nil)
+    if err != nil {
+        return nil, err
+    }
+
+    var robotUser RobotUser
+    _, err = s.client.do(req, &robotUser)
+    if err != nil {
+        return nil, err
+    }
+    return &robotUser, nil
+}
+
+// getUsernameFromRobotUserName extracts username from full robot name
+// Quay returns robot names as "org+username", but API expects just "username"
+func getUsernameFromRobotUserName(robotUserName string) string {
+    split := strings.Split(robotUserName, "+")
+    if len(split) < 2 {
+        return ""
+    }
+    return split[1]
+}
+```
+
+**Usage in Registry Credential Service** (`pkg/services/registry_credential.go`):
+
+```go
+func (s *sqlRegistryCredentialService) createExternalQuayCredentials(
+    ctx context.Context,
+    cred *api.RegistryCredential,
+    cluster *api.Cluster,
+    registry *api.Registry,
+) error {
+    // Extract cloud context from cluster
+    provider := strings.ToLower(cluster.CloudProvider)  // "gcp", "aws", "azure"
+    region := cluster.Region                             // "us-east1", "us-west-2", "eastus"
+
+    // Create robot user in Quay with cloud context
+    robotUser, err := s.quayClient.RobotUsers.Create(registry.OrgName, provider, region)
+    if err != nil {
+        return fmt.Errorf("Unable to create external quay registry credential user account: %s", err)
+    }
+
+    // Store credentials
+    cred.Username = robotUser.Name  // e.g., "redhat-openshift+hyperfleet_gcp_useast1_a1b2c3d4e5f6"
+    cred.Token = robotUser.Token
+    cred.RegistryID = registry.ID
+    cred.AccountID = &cluster.ID  // In HyperFleet, AccountID stores cluster ID
+
+    // Add robot to team for permissions
+    if err := addQuayTeamMember(ctx, s.quayClient, registry, robotUser); err != nil {
+        // Clean up robot if team assignment fails
+        s.quayClient.RobotUsers.Delete(registry.OrgName, robotUser.Name)
+        return err
+    }
+
+    return nil
+}
+```
+
+**Key Implementation Notes**:
+- **Naming Pattern**: HyperFleet uses `hyperfleet_{provider}_{region}_{uuid}` (e.g., `hyperfleet_gcp_useast1_a1b2c3d4e5f6`)
+  - **Difference from AMS**: AMS uses `ocm_access_{uuid}` without cloud context
+  - **Rationale**: Include provider/region for better traceability and audit trails
+  - **Components**:
+    - `hyperfleet` - Service identifier
+    - `{provider}` - Cloud provider (gcp, aws, azure)
+    - `{region}` - Normalized region (us-east1 → useast1, removes hyphens/dots)
+    - `{uuid}` - First 16 chars of UUID (uniqueness)
+- **Quay Username Format**: After creation, Quay returns `{org}+{username}` (e.g., `redhat-openshift+hyperfleet_gcp_useast1_a1b2c3d4`)
+- **Organization**: Uses `OrgName` from Registry config (e.g., `redhat-openshift` for HyperFleet)
+- **Team Assignment**: Robot accounts assigned to `TeamName` from Registry config (e.g., `hyperfleet-installers`)
+- **Auto-create Team**: If team doesn't exist, creates it automatically with "member" role
+- **Regex Compliance**: Quay enforces `^[a-z0-9_]{1,254}$` - function normalizes regions and removes hyphens
+- **Cloud Context**: Provider and region extracted from cluster metadata at creation time
+- **Note**: `OrgName` and `TeamName` from Registry config used in Quay API calls
+
 
 ---
 
