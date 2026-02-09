@@ -784,7 +784,7 @@ The Pull Secret Service operates with **effectively anonymous credential fetchin
 
 **Decision Drivers**: This design simplifies compliance by moving screening upstream (organization onboarding) and enables fully automated, cloud-native credential management without human-in-the-loop identity verification.
 
-#### 2.3.2 M2: Ban/Unban Operations
+#### 2.3.2 Ban/Unban Operations (Milestone 2)
 
 **AMS Logic**: Bans remove credentials from registries, moves Quay robots to "banned" team
 
