@@ -8,7 +8,7 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 
 **Scope**:
 - **M1 (MVP)**: Cloud-agnostic pull secret generation for Quay.io and Red Hat registries
-- **M2**: Automated credential rotation and lifecycle management
+- **M2**: Introduces credential rotation and reconciler support, credential pool management, ban/unban operations, and end-to-end lifecycle management
 - **M3**: Support for private/customer-specific registries (e.g., Harbor, Nexus) and multi-cloud secret storage
 
 **Assumptions**:
