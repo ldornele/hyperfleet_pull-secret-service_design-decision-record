@@ -25,6 +25,7 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 1. [Pull Secret Service Purpose and Responsibilities](#1-pull-secret-service-purpose-and-responsibilities)
 2. [AMS Lift-and-Shift Assessment](#2-ams-lift-and-shift-assessment)
 3. [Pull Secret Rotation Requirements](#8-pull-secret-rotation-requirements)
+4. [Registry Authentication Architecture](#4-registry-authentication-architecture)
 
 ---
 
@@ -811,9 +812,6 @@ The Pull Secret Service operates with **effectively anonymous credential fetchin
 - `/docs/pull_secret_rotation.md`
 - `/docs/pull_secret_auto_rotation.md`
 
-
-
-
 ---
 
 
@@ -829,3 +827,350 @@ In general, pull secret rotation is required in the following scenarios:
 
 - **90 days** – Industry standard  
 - **60 days** – Enhanced security for regulated environments (e.g., financial or healthcare sectors)
+
+---
+
+## 4. Registry Authentication Architecture
+
+This section documents the authentication mechanisms used by HyperFleet (and AMS) to interact with container registries, highlighting the key differences between Quay.io and Red Hat IT Registry (RHIT).
+
+### 4.1 Authentication Layers Overview
+
+HyperFleet interacts with two types of container registries, each with different authentication architectures:
+
+| Registry | Authentication Layers | Service Auth Type | Cluster Auth Type |
+|----------|----------------------|-------------------|-------------------|
+| **Quay.io** | **1 layer** | Bearer Token | Robot Account Token |
+| **Red Hat IT** | **2 layers** | mTLS (Client Cert/Key) | JWT Token |
+
+### 4.2 Quay.io Authentication (Single Layer)
+
+**Architecture**: Simple bearer token authentication for both service operations and robot account management.
+
+#### 4.2.1 Service Authentication
+
+HyperFleet authenticates to Quay.io API using a single **bearer token**:
+
+```go
+// pkg/client/quay/client.go
+type Client struct {
+    httpClient *http.Client
+    authToken  string  // ← Single authentication credential
+}
+
+func (c *Client) newRequest(method string, path string, body interface{}) (*http.Request, error) {
+    req, err := http.NewRequest(method, u.String(), buf)
+    req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.authToken))
+    return req, nil
+}
+```
+
+**Configuration**:
+
+```yaml
+# config/hyperfleet.yaml
+quay:
+  auth_token_file: "secrets/quay.token"  # ← Single secret file
+  timeout: 5s
+```
+
+**API Request Example**:
+
+```bash
+PUT https://quay.io/api/v1/organization/redhat-openshift/robots/hyperfleet_gcp_useast1_abc123
+Authorization: Bearer gcMDcAbpV0nI32FPQEYPABgaUCudVbCKl1sYL9mY
+Content-Type: application/json
+
+{
+  "description": "Created by HyperFleet Pull Secret Service"
+}
+```
+
+**Response** (Robot Account Credentials):
+
+```json
+{
+  "name": "redhat-openshift+hyperfleet_gcp_useast1_abc123",
+  "token": "ROBOT_TOKEN_XYZ",
+  "description": "Created by HyperFleet Pull Secret Service"
+}
+```
+
+#### 4.2.2 Namespace Model
+
+Quay.io uses **organizations** as the namespace mechanism:
+
+```
+Organization: redhat-openshift
+├── Robot Account: hyperfleet_gcp_useast1_abc123
+├── Robot Account: hyperfleet_aws_uswest2_def456
+└── Robot Account: hyperfleet_azure_eastus_ghi789
+
+Full username format: {org}+{robot_username}
+Example: redhat-openshift+hyperfleet_gcp_useast1_abc123
+```
+
+**Key Characteristics**:
+- ✅ Single token authenticates service for ALL operations
+- ✅ Organization determines namespace
+- ✅ No certificate management required
+- ✅ Simple HTTP bearer token authentication
+
+---
+
+### 4.3 Red Hat IT Registry Authentication (Dual Layer)
+
+**Architecture**: Mutual TLS (mTLS) for service authentication, JWT tokens for cluster authentication.
+
+#### 4.3.1 Layer 1: Service Authentication (mTLS)
+
+HyperFleet authenticates to RHIT API using **client certificates**:
+
+```go
+// pkg/client/rhit/client.go
+type Client struct {
+    httpClient *http.Client  // ← Configured with mTLS
+}
+
+func NewClient(ctx context.Context, config *ClientConfiguration) (*Client, error) {
+    // Load client certificate and key
+    clientCert, err := tls.X509KeyPair([]byte(config.ClientCrt), []byte(config.ClientKey))
+
+    // Configure TLS with client authentication
+    tlsConfig := tls.Config{
+        RootCAs:      rootCAs,
+        Certificates: []tls.Certificate{clientCert},  // ← Client cert for auth
+    }
+
+    httpClient := &http.Client{
+        Transport: &http.Transport{
+            TLSClientConfig: &tlsConfig,
+        },
+    }
+    return client, nil
+}
+```
+
+**Configuration**:
+
+```yaml
+# config/hyperfleet.yaml
+rhit:
+  partner_code: "ocm-service"  # ← Namespace identifier
+  base_registry_url: "https://container-registry-authorizer.redhat.com/v1/"
+  client_crt_path: "secrets/rhsm.crt"    # ← Client certificate
+  client_key_path: "secrets/rhsm.key"    # ← Private key
+  root_ca_path:
+    - "secrets/rhsm-2015.ca"
+    - "secrets/rhsm-2022.ca"
+  timeout: 5s
+```
+
+**Required Secrets** (3 files):
+
+| File | Purpose | Shared with AMS? |
+|------|---------|------------------|
+| `rhsm.crt` | Client certificate | ✅ Yes (if using `ocm-service`) |
+| `rhsm.key` | Private key | ✅ Yes (if using `ocm-service`) |
+| `rhsm-*.ca` | Root CA certificates | ✅ Yes |
+
+#### 4.3.2 Layer 2: Partner Service Account Credentials (JWT)
+
+After authenticating via mTLS, HyperFleet creates Partner Service Accounts that receive **JWT tokens**:
+
+**API Request Example**:
+
+```bash
+POST https://container-registry-authorizer.redhat.com/v1/partners/ocm-service/service-accounts
+Client-Certificate: [rhsm.crt]  # ← mTLS authentication
+Client-Key: [rhsm.key]          # ← mTLS authentication
+Content-Type: application/json
+
+{
+  "name": "hyp-cls-abc123",
+  "description": "HyperFleet cluster pull secret"
+}
+```
+
+**Response** (Service Account with JWT):
+
+```json
+{
+  "name": "hyp-cls-abc123",
+  "partnerCode": "ocm-service",
+  "created": "2026-02-08T10:00:00Z",
+  "credentials": {
+    "username": "|hyp-cls-abc123",  // ← Pipe prefix added by RHIT
+    "password": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."  // ← JWT token
+  }
+}
+```
+
+#### 4.3.3 Partner Code Namespace Model
+
+RHIT uses **partner codes** as the namespace mechanism:
+
+```
+Partner Code: ocm-service (shared between AMS and HyperFleet)
+├── AMS Service Accounts:
+│   ├── |uhc-cls-xyz789  (AMS cluster)
+│   └── |uhc-pool-abc123 (AMS pool)
+│
+└── HyperFleet Service Accounts:
+    ├── |hyp-cls-abc123  (HyperFleet cluster)
+    └── |hyp-pool-def456 (HyperFleet pool)
+
+Username format: |{name}
+Example: |hyp-cls-abc123
+```
+
+**Namespace Isolation**:
+- Prefixes (`uhc-` vs `hyp-`) prevent name collisions
+- Partner code (`ocm-service`) shared between AMS and HyperFleet
+- Same client certificates used by both services
+
+**Key Characteristics**:
+- ✅ mTLS provides strong authentication
+- ✅ Partner code enables namespace sharing
+- ✅ JWT tokens have automatic expiration/rotation capabilities
+- ❌ Requires certificate management and renewal
+- ❌ More complex configuration (3+ secret files)
+
+---
+
+### 4.4 Comparative Analysis
+
+#### 4.4.1 Service Authentication Comparison
+
+| Aspect | **Quay.io** | **Red Hat IT** |
+|--------|-------------|----------------|
+| **Method** | HTTP Bearer Token | Mutual TLS (mTLS) |
+| **Secrets Required** | 1 file (`quay.token`) | 3+ files (`rhsm.crt`, `rhsm.key`, CAs) |
+| **Certificate Management** | ❌ Not required | ✅ Required (renewal, rotation) |
+| **Security Level** | Medium (token-based) | High (certificate-based) |
+| **Complexity** | Low | Medium-High |
+| **Shared with AMS** | ❌ No | ✅ Yes (if using `ocm-service`) |
+
+#### 4.4.2 Robot/Service Account Comparison
+
+| Aspect | **Quay.io** | **Red Hat IT** |
+|--------|-------------|----------------|
+| **Account Type** | Robot Account | Partner Service Account |
+| **Token Type** | String token | JWT token |
+| **Username Format** | `{org}+{robot_username}` | `\|{name}` |
+| **Username Example** | `redhat-openshift+hyperfleet_gcp_useast1_abc123` | `\|hyp-cls-abc123` |
+| **Naming Convention** | `hyperfleet_{provider}_{region}_{uuid}` | `hyp-cls-{cluster_id}` |
+| **Max Length** | 254 characters | 49 characters |
+| **Namespace** | Organization | Partner Code |
+| **Soft Delete** | ❌ No | ✅ Yes (recoverable) |
+| **Team Assignment** | ✅ Yes | ❌ No |
+
+#### 4.4.3 Pull Secret Format Comparison
+
+**Quay.io Pull Secret**:
+
+```yaml
+{
+  "auths": {
+    "quay.io": {
+      "auth": "cmVkaGF0LW9wZW5zaGlmdCtoeXBlcmZsZWV0X2djcF91c2Vhc3QxX2FiYzEyMzpST0JPVF9UT0tFTl9YWVo="
+    }
+  }
+}
+
+# Decoded: redhat-openshift+hyperfleet_gcp_useast1_abc123:ROBOT_TOKEN_XYZ
+# Format: {org}+{robot_username}:{token}
+```
+
+**RHIT Pull Secret**:
+
+```yaml
+{
+  "auths": {
+    "registry.redhat.io": {
+      "auth": "fGh5cC1jbHMtYWJjMTIzOmV5SmhiR2NpT2lKSVV6STFOaUlzSW5SNWNDSTZJa3BYVkNKOS4uLg=="
+    }
+  }
+}
+
+# Decoded: |hyp-cls-abc123:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+# Format: |{name}:{jwt_token}
+```
+
+---
+
+### 4.5 HyperFleet Configuration Requirements
+
+#### 4.5.1 Secrets Management
+
+**For Quay.io**:
+
+```bash
+# Single secret file
+secrets/quay.token
+```
+
+**For RHIT**:
+
+```bash
+# Three secret files (shared with AMS if using ocm-service partner code)
+secrets/rhsm.crt        # Client certificate
+secrets/rhsm.key        # Private key
+secrets/rhsm-2015.ca    # Root CA (older)
+secrets/rhsm-2022.ca    # Root CA (current)
+```
+
+#### 4.5.2 Partner Code Decision
+
+**Option 1: Share `ocm-service` with AMS (Recommended for MVP)**
+
+✅ **Advantages**:
+- Immediate availability (no Red Hat IT approval process)
+- Reuse existing certificates
+- Proven infrastructure
+
+❌ **Disadvantages**:
+- Shared namespace with AMS
+- Certificate rotation must be coordinated
+- Failure blast radius affects both services
+
+**Option 2: Request Dedicated `hyperfleet-service` Partner Code**
+
+✅ **Advantages**:
+- Isolated namespace
+- Independent certificate management
+- Clear separation from AMS
+
+❌ **Disadvantages**:
+- Requires Red Hat IT ticket/approval (days/weeks)
+- Separate certificate management overhead
+- Additional operational complexity
+
+**Recommendation**: Use `ocm-service` for MVP, consider migration to dedicated partner code post-MVP if operational requirements warrant isolation.
+
+#### 4.5.3 Implementation Checklist
+
+**Quay.io Setup**:
+- [ ] Obtain Quay.io bearer token for `redhat-openshift` organization
+- [ ] Store token in `secrets/quay.token`
+- [ ] Configure `quay.auth_token_file` in HyperFleet config
+- [ ] Verify API access with test robot account creation
+
+**RHIT Setup**:
+- [ ] Obtain `rhsm.crt`, `rhsm.key`, and CA certificates from AMS team
+- [ ] Store certificates in HyperFleet secrets directory
+- [ ] Configure `rhit.partner_code: "ocm-service"` in HyperFleet config
+- [ ] Configure certificate paths in HyperFleet config
+- [ ] Verify API access with test service account creation
+- [ ] Coordinate certificate rotation schedule with AMS team
+
+---
+
+### 4.6 Key Takeaways
+
+1. **Quay.io**: Simple bearer token authentication, single layer, no certificate management
+2. **RHIT**: Dual-layer authentication (mTLS + JWT), more secure but more complex
+3. **Shared Infrastructure**: RHIT uses `ocm-service` partner code shared with AMS
+4. **Different Credentials**: Despite sharing partner code, each service account receives unique JWT tokens
+5. **Naming Conventions**: Different patterns for Quay (`hyperfleet_{provider}_{region}_{uuid}`) vs RHIT (`hyp-cls-{id}`)
+
