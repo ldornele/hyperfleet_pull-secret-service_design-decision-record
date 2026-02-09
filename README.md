@@ -1260,11 +1260,11 @@ The `auth` field contains base64-encoded `username:token` credentials:
 - RHIT: `base64("|hyp-cls-abc123:jwt_token_789")` (format: `|{name}:jwt_token`, pipe prefix added by RHIT)
 
 **Errors**:
-- `400 HYPERFLEET-VAL-010`: Invalid registry specified
-- `404 HYPERFLEET-NTF-001`: Cluster not found
-- `429 HYPERFLEET-LMT-001`: Rate limit exceeded
-- `500 HYPERFLEET-INT-001`: Internal server error
-- `502 HYPERFLEET-SVC-001`: Registry API unavailable (falls back to pool)
+- `400 HYPERFLEET-8`: Invalid registry specified
+- `404 HYPERFLEET-7`: Cluster not found
+- `429 HYPERFLEET-3`: Rate limit exceeded
+- `500 HYPERFLEET-9`: Internal server error
+- `502 HYPERFLEET-16`: Registry API unavailable (falls back to pool)
 
 **Idempotency**: Multiple calls return the same credentials unless `force_new=true`
 
