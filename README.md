@@ -26,7 +26,10 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 2. [AMS Lift-and-Shift Assessment](#2-ams-lift-and-shift-assessment)
 3. [Pull Secret Rotation Requirements](#8-pull-secret-rotation-requirements)
 4. [Registry Authentication Architecture](#4-registry-authentication-architecture)
-
+5. [API Design](#5-api-design)
+6. [Deployment Architecture Decision](#6-deployment-architecture-decision)
+7. [Storage Backend](#7-storage-backend)
+8. [Security Considerations](#8-security-considerations)
 ---
 
 ## 1. Pull Secret Service Purpose and Responsibilities
@@ -702,13 +705,9 @@ Since robot account names include `{provider}_{region}`, there are two approache
 
 **AMS Approach**:
 - OCM JWT tokens
-- `access_review` service for permission checks
-- User-owns-resource pattern
 
 **HyperFleet Adaptation**:
-- Replace OCM JWT with HyperFleet API JWT (OIDC post-MVP)
-- Replace `access_review` with HyperFleet RBAC (cluster owner checks)
-- Maintain user-owns-resource pattern for pull secret rotation endpoints
+- Service-to-service authentication via Kubernetes ServiceAccount tokens
 
 #### 2.2.2 Database Schema
 
@@ -1174,3 +1173,53 @@ secrets/rhsm-2022.ca    # Root CA (current)
 4. **Different Credentials**: Despite sharing partner code, each service account receives unique JWT tokens
 5. **Naming Conventions**: Different patterns for Quay (`hyperfleet_{provider}_{region}_{uuid}`) vs RHIT (`hyp-cls-{id}`)
 
+
+### 4.7 Network Connectivity Test
+
+✅ **Public internet access enabled for RHIT**
+
+```bash
+[root]$ nc -zv container-registry-authorizer.api.redhat.com 443
+Ncat: Version 7.92 ( https://nmap.org/ncat )
+Ncat: Connected to 23.65.139.246:443.
+Ncat: 0 bytes sent, 0 bytes received in 0.12 seconds.
+```
+
+
+---
+
+## 5. API Design
+
+- TBD
+
+---
+
+## 6. Deployment Architecture Decision
+
+### 6.1 Options Analysis
+
+#### Option A: Per-HyperFleet Instance Deployment (MVP)
+
+- TBD
+
+#### Option B: Global Shared Service
+
+- TBD
+
+---
+
+## 7. Storage Backend
+
+- TBD
+
+---
+
+## 8. Security Considerations
+
+- TBD
+  
+- How to retrieve the pull secret from the vault in the Regional Cluster. We discussed possibles approaches:
+    - Via the Maestro API — not recommended due to security concerns around transporting sensitive data. 
+    - Using External Secrets Operator in the Management Cluster to pull from GCP Secret Manager in the Regional Cluster — also not recommended from a security standpoint, since a single Management Cluster could potentially access pull secrets across multiple MCs within Regional Cluster.
+    - Running a Job in the Regional Cluster that stores the pull secret in GCP Secret Manager hosted in the Management Cluster — this appears to be the preferred approach from a security perspective. However, it introduces pull secret duplication across clusters. This could make pull secret rotation significantly more complex, especially when secrets are spread across multiple vaults (RC and MC).
+    - MC consumes the Pull Secret Service endpoint (e.g., /v1/registry_credentials/{cluster_id}) to retrieve its credentials.
