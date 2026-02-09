@@ -16,6 +16,7 @@ The **HyperFleet Pull Secret Service** is a cloud-agnostic credential management
 - Red Hat SSO authentication is out of scope. As token retrieval is effectively anonymous and relies on cloud provider–based identification, the **HyperFleet Pull Secret Service** will not have access to Red Hat IT user information for screening purposes. 
 - A per-hyperfleet instance deployment (Option A) is adopted over a global shared service to prioritize operational simplicity and failure isolation during the MVP phase, while preserving a path to post-MVP consolidation. Post-MVP, the architecture should support both per-hyperfleet and global deployments, enabling broader reuse (e.g., for OCP self-managed use cases).
 - **HyperFleet Pull Secret Service** will adopt the T-Rex pattern as its architectural pattern.
+- Partner Code Usage for **HyperFleet Pull Secret Service**. The `partner_code` effectively acts as a tenant ID used by Red Hat IT to organize and isolate credentials for different Red Hat services accessing `registry.redhat.io`. For the MVP, the `partner_code` will be shared between AMS and HyperFleet to avoid delivery delays, since provisioning a new partner code can take several weeks.
 
 ---
 
@@ -626,13 +627,14 @@ func getRHServiceAccountNameFromUsername(username string) (string, error) {
   - **Example**: Request name `hyp-cls-abc123`, receive username `|hyp-cls-abc123`
 - **Token Format**: JWT token (not simple password like Quay)
 - **Partner Code**: `ocm-service` (shared between AMS and HyperFleet)
+  - **Post-MVP**: Adopt a dedicated partner code as HyperFleet scales significantly (e.g., to thousands of clusters).
 - **Soft Delete**: Deleted accounts can be recovered via `UpdatePartnerServiceAccount(name, recover=true)`
 - **Length Limit**: **49 characters maximum** (RHIT limitation)
 - **No Team Assignment**: Red Hat Registry doesn't use teams (unlike Quay)
 - **API Endpoint**: `https://container-registry-authorizer.api.redhat.com/v1/partners/ocm-service/service-accounts`
 - **Credential Reuse**: Multiple Red Hat registries (`registry.redhat.io`, `registry.connect.redhat.com`) share same credentials
 
-#### 2.1.4 M2: Credential Pool Management
+#### 2.1.4 Credential Pool Management (Milestone 2)
 
 **File**: `cmd/account-manager/jobs/registry_credential_pool_loader.go`
 
@@ -671,7 +673,7 @@ Since robot account names include `{provider}_{region}`, there are two approache
 2. Quay robot renaming API is available and tested
 3. Operational complexity is acceptable
 
-#### 2.1.5 M2: Rotation Reconciler
+#### 2.1.5 Rotation Reconciler (Milestone 2)
 
 **File**: `cmd/account-manager/jobs/pull_secret_rotations_reconciler.go`
 
