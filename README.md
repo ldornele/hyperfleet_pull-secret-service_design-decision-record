@@ -63,7 +63,7 @@ The **Pull Secret Service** is responsible for:
 
 Based on analysis of `uhc-account-manager` repository, the following components should be lifted and shifted:
 
-#### 3.1.1 Data Model
+#### 2.1.1 Data Model
 
 **RegistryCredential** (`pkg/api/registry_credential_types.go`):
 ```go
@@ -133,7 +133,7 @@ type Registry struct {
 }
 ```
 
-#### 3.1.2 Access Token Service
+#### 2.1.2 Access Token Service
 
 **File**: `pkg/services/access_token.go`
 
@@ -172,7 +172,7 @@ func (s *AccessTokenService) GeneratePullSecret(ctx context.Context, clusterID s
 }
 ```
 
-#### 3.1.3 Registry Integrations
+#### 2.1.3 Registry Integrations
 
 **Quay Robot Users** (`pkg/client/quay/robot_users.go`):
 
@@ -632,7 +632,7 @@ func getRHServiceAccountNameFromUsername(username string) (string, error) {
 - **API Endpoint**: `https://container-registry-authorizer.api.redhat.com/v1/partners/ocm-service/service-accounts`
 - **Credential Reuse**: Multiple Red Hat registries (`registry.redhat.io`, `registry.connect.redhat.com`) share same credentials
 
-#### 3.1.4 M2: Credential Pool Management
+#### 2.1.4 M2: Credential Pool Management
 
 **File**: `cmd/account-manager/jobs/registry_credential_pool_loader.go`
 
@@ -671,7 +671,7 @@ Since robot account names include `{provider}_{region}`, there are two approache
 2. Quay robot renaming API is available and tested
 3. Operational complexity is acceptable
 
-#### 3.1.5 M2: Rotation Reconciler
+#### 2.1.5 M2: Rotation Reconciler
 
 **File**: `cmd/account-manager/jobs/pull_secret_rotations_reconciler.go`
 
@@ -692,9 +692,9 @@ Since robot account names include `{provider}_{region}`, there are two approache
 - Old credentials only deleted after confirmation cluster has updated
 - **Implementation**: Query for credentials by `(cluster_id, registry_id)` returns multiple records; use most recent based on `CreatedAt`
 
-### 3.2 Components to Adapt
+### 2.2 Components to Adapt
 
-#### 3.2.1 Authentication and Authorization
+#### 2.2.1 Authentication and Authorization
 
 **AMS Approach**:
 - OCM JWT tokens
@@ -706,7 +706,7 @@ Since robot account names include `{provider}_{region}`, there are two approache
 - Replace `access_review` with HyperFleet RBAC (cluster owner checks)
 - Maintain user-owns-resource pattern for pull secret rotation endpoints
 
-#### 3.2.2 Database Schema
+#### 2.2.2 Database Schema
 
 **AMS Approach**:
 - PostgreSQL with GORM ORM
@@ -719,7 +719,7 @@ Since robot account names include `{provider}_{region}`, there are two approache
 - If using per-instance deployment, consider adding `hyperfleet_instance_id` column for cross-instance queries
 - Add composite index on `(hyperfleet_instance_id, account_id)` if multi-instance tracking is needed
 
-#### 3.2.3 API Endpoints
+#### 2.2.3 API Endpoints
 
 **AMS Approach**:
 - REST endpoints: `POST /access_token`, `DELETE /access_token/{id}`
@@ -730,9 +730,9 @@ Since robot account names include `{provider}_{region}`, there are two approache
 - Use CloudEvents for async rotation triggers (not direct HTTP calls)
 - Status reporting via `/clusters/{id}/statuses` (adapter pattern)
 
-### 3.3 Components to Replace
+### 2.3 Components to Replace
 
-#### 3.3.1 Export Control Checks and User Screening
+#### 2.3.1 Export Control Checks and User Screening
 
 **AMS Logic**: Account screening middleware checks for export control restrictions based on Red Hat IT user information (user email, organization, geographic location)
 
@@ -782,7 +782,7 @@ The Pull Secret Service operates with **effectively anonymous credential fetchin
 
 **Decision Drivers**: This design simplifies compliance by moving screening upstream (organization onboarding) and enables fully automated, cloud-native credential management without human-in-the-loop identity verification.
 
-#### 3.3.2 M2: Ban/Unban Operations
+#### 2.3.2 M2: Ban/Unban Operations
 
 **AMS Logic**: Bans remove credentials from registries, moves Quay robots to "banned" team
 
