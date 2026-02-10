@@ -1415,13 +1415,126 @@ rules:
 
 ### 6.1 Options Analysis
 
-#### Option A: Per-HyperFleet Instance Deployment (MVP)
+#### Option A: Per-HyperFleet Instance Deployment
 
-- TBD
+**Architecture**:
+```
+┌─────────────────────────────────────────┐
+│ HyperFleet Instance 1 (us-east-1)       │
+│ ┌─────────────────────────────────────┐ │
+│ │ Pull Secret Service (Deployment)    │ │
+│ │ - 3 replicas                        │ │
+│ │ - Postgres DB (local)               │ │
+│ │ - Quay/RHIT API clients             │ │
+│ │ - Credential pool (local)           │ │
+│ └─────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────┐ │
+│ │ Pull Secret Adapter (Deployment)    │ │
+│ │ - Calls Pull Secret Service         │ │
+│ └─────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+
+┌─────────────────────────────────────────┐
+│ HyperFleet Instance 2 (eu-west-1)       │
+│ ┌─────────────────────────────────────┐ │
+│ │ Pull Secret Service (Deployment)    │ │
+│ │ - 3 replicas                        │ │
+│ │ - Postgres DB (local)               │ │
+│ │ - Quay/RHIT API clients             │ │
+│ │ - Credential pool (local)           │ │
+│ └─────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────┐ │
+│ │ Pull Secret Adapter (Deployment)    │ │
+│ │ - Calls Pull Secret Service         │ │
+│ └─────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+```
+
+**Characteristics**:
+- **Deployment**: One Pull Secret Service per HyperFleet instance
+- **Database**: Each service has its own Postgres database (not shared)
+- **Credential Pool**: Each service maintains its own pool
+- **Networking**: Pull Secret Adapter calls service via in-cluster DNS (`pull-secret-service.hyperfleet-system.svc.cluster.local`)
+- **Credentials**: Quay/RHIT API credentials shared across all instances (stored in Kubernetes Secrets)
+
+**Pros**:
+- ✅ **Failure Isolation**: Outage in one region doesn't affect others
+- ✅ **Simple Networking**: No cross-region/cross-cluster network dependencies
+- ✅ **Reduced Latency**: Service co-located with adapters (no cross-region calls)
+- ✅ **Independent Scaling**: Each region scales independently based on local load
+- ✅ **Easier Rollout**: Deploy/upgrade per region with canary testing
+- ✅ **Data Residency**: Credentials stored in same region as clusters (compliance)
+- ✅ **Simpler Operations**: Standard Kubernetes deployment, no special networking
+
+**Cons**:
+- ❌ **Duplicated Infrastructure**: N databases, N deployments (higher cost)
+- ❌ **Pool Inefficiency**: Total pool size = N × high_water_mark (over-provisioning)
+- ❌ **Operational Overhead**: Must manage N instances (upgrades, monitoring, backups)
 
 #### Option B: Global Shared Service
 
-- TBD
+**Architecture**:
+```
+┌─────────────────────────────────────────┐
+│ Global Pull Secret Service              │
+│ (Shared across all HyperFleet instances)│
+│ ┌─────────────────────────────────────┐ │
+│ │ Pull Secret Service (Deployment)    │ │
+│ │ - 5 replicas (multi-region)         │ │
+│ │ - Global Postgres DB (replicated)   │ │
+│ │ - Quay/RHIT API clients             │ │
+│ │ - Credential pool (global)          │ │
+│ └─────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────┐ │
+│ │ Global Load Balancer                │ │
+│ │ (Routes to nearest replica)         │ │
+│ └─────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+         ↑                ↑              ↑
+         │                │              │
+┌────────┴───┐   ┌────────┴───┐  ┌──────┴─────┐
+│ Instance 1 │   │ Instance 2 │  │ Instance 3 │
+│ us-east-1  │   │ eu-west-1  │  │ ap-south-1 │
+└────────────┘   └────────────┘  └────────────┘
+```
+
+**Characteristics**:
+- **Deployment**: Single Pull Secret Service (multi-region replicated)
+- **Database**: Global Postgres with read replicas in each region
+- **Credential Pool**: Single global pool shared across all instances
+- **Networking**: Adapters call service via global load balancer or service mesh
+- **Credentials**: Quay/RHIT API credentials shared (same as Option A)
+
+**Pros**:
+- ✅ **Cost Efficiency**: Single database, smaller total pool size
+- ✅ **Centralized Management**: One deployment to manage, upgrade, monitor
+- ✅ **Pool Efficiency**: Shared pool absorbs variance across regions (smaller total pool)
+- ✅ **Consistent Credential Tracking**: Single source of truth for all credentials
+
+**Cons**:
+- ❌ **Blast Radius**: Outage affects all HyperFleet instances globally
+- ❌ **Complex Networking**: Requires cross-cluster networking (service mesh, VPN, or public endpoint)
+- ❌ **Increased Latency**: Cross-region API calls add 50-200ms latency
+- ❌ **Single Point of Failure**: Database outage blocks all cluster creations
+- ❌ **Operational Complexity**: Global database replication, load balancing, failover
+- ❌ **Difficult Rollout**: Canary deployments affect all regions simultaneously
+
+### 6.2 Decision: Per-HyperFleet Instance Deployment (Option A)
+
+**Recommendation**: Deploy **one Pull Secret Service per HyperFleet instance** (Option A)
+
+**Rationale**:
+1. **MVP Prioritizes Simplicity**: During MVP, operational simplicity and fast iteration are more important than cost optimization
+2. **Failure Isolation**: HyperFleet instances should be independent to limit blast radius (outage in us-east-1 shouldn't affect eu-west-1)
+3. **No Cross-Region Dependencies**: Aligns with HyperFleet's "no cross-region dependencies" principle (same pattern as Sentinel, adapters, API)
+4. **Standard Kubernetes Pattern**: Deployments, Services, ConfigMaps - standard DevOps playbook
+5. **Data Residency**: Credentials stored in same region as clusters (easier compliance story)
+6. **Cost Acceptable for MVP**: ~$680/month for 3 instances is acceptable for MVP phase
+
+**Post-MVP Consolidation Path**:
+- If operational overhead becomes significant (>5 instances), revisit global service
+- If cost optimization is prioritized, measure actual pool utilization (may be over-provisioned)
+- If cross-region networking is implemented for other services, global service becomes easier
 
 ---
 
