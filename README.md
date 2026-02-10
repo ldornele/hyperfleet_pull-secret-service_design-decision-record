@@ -1287,7 +1287,7 @@ The `auth` field contains base64-encoded `username:token` credentials:
 ```
 
 **Errors**:
-- `404 HYPERFLEET-NTF-002`: Pull secret not found for cluster
+- `404 HYPERFLEET-7`: Pull secret not found for cluster
 
 #### 5.1.3 Delete Pull Secret
 
@@ -1298,8 +1298,8 @@ The `auth` field contains base64-encoded `username:token` credentials:
 **Response** (204 No Content)
 
 **Errors**:
-- `404 HYPERFLEET-NTF-001`: Cluster not found
-- `500 HYPERFLEET-INT-002`: Failed to revoke credentials from registry
+- `404 HYPERFLEET-7`: Cluster not found
+- `500 HYPERFLEET-9`: Failed to revoke credentials from registry
 
 **Side Effects**:
 - Deletes robot accounts from Quay
@@ -1334,8 +1334,8 @@ The `auth` field contains base64-encoded `username:token` credentials:
 ```
 
 **Errors**:
-- `404 HYPERFLEET-NTF-001`: Cluster not found
-- `409 HYPERFLEET-CNF-001`: Rotation already in progress for cluster
+- `404 HYPERFLEET-7`: Cluster not found
+- `409 HYPERFLEET-6`: Rotation already in progress for cluster
 
 #### 5.1.5 Get Rotation Status
 
